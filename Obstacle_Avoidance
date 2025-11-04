@@ -13,9 +13,10 @@ URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E705')
 if len(sys.argv) > 1:
     URI = sys.argv[1]
 
+# Only output errors from the logging framework
 logging.basicConfig(level=logging.ERROR)
 
-# Check for obstacle within threshold
+# Obstacle detection threshold
 def is_close(range_val, threshold=0.3):
     if range_val is None:
         return False
@@ -44,10 +45,12 @@ landing_sequence = [
 ]
 
 if __name__ == "__main__":
+    # Initialize drivers
     cflib.crtp.init_drivers()
     cf = Crazyflie(rw_cache='./cache')
 
     with SyncCrazyflie(URI, cf=cf) as scf:
+        # Arm drone
         scf.cf.platform.send_arming_request(True)
         time.sleep(1.0)
 
@@ -58,41 +61,40 @@ if __name__ == "__main__":
                 position_commander.go_to(x, y, z)
                 time.sleep(t)
 
-            # ----- Main waypoint route with real-time avoidance -----
+            # ----- Main route with lateral obstacle avoidance -----
             x, y, z = 0.0, 0.0, 0.4
             for target_x, target_y, target_z, hold_time in route_sequence:
                 while abs(x - target_x) > 0.01 or abs(y - target_y) > 0.01:
                     dx, dy = target_x - x, target_y - y
 
-                    # Normalize movement step
-                    step = 0.05
-                    move_x = step if dx > 0 else -step
-                    move_y = step if dy > 0 else -step
+                    # Step increment
+                    step_size = 0.05
+                    move_x = step_size if dx > 0 else -step_size
+                    move_y = step_size if dy > 0 else -step_size
 
-                    # Avoidance maneuver
+                    # ----- Lateral obstacle avoidance -----
                     if is_close(multiranger.front) and dx > 0:
-                        # Obstacle ahead, sidestep laterally
+                        move_x = 0
                         if not is_close(multiranger.left):
-                            dy += 0.3
+                            move_y = step_size
                         elif not is_close(multiranger.right):
-                            dy -= 0.3
-                        else:
-                            move_x = 0  # stop if blocked
+                            move_y = -step_size
                     if is_close(multiranger.back) and dx < 0:
+                        move_x = 0
                         if not is_close(multiranger.left):
-                            dy += 0.3
+                            move_y = step_size
                         elif not is_close(multiranger.right):
-                            dy -= 0.3
-                        else:
-                            move_x = 0
+                            move_y = -step_size
                     if is_close(multiranger.left) and dy > 0:
                         move_y = 0
                     if is_close(multiranger.right) and dy < 0:
                         move_y = 0
 
+                    # Update position
                     x += move_x + dx * 0.1
                     y += move_y + dy * 0.1
                     z = target_z
+
                     position_commander.go_to(x, y, z)
                     time.sleep(0.1)
 
@@ -104,4 +106,4 @@ if __name__ == "__main__":
                 position_commander.go_to(x, y, z)
                 time.sleep(t)
 
-            print("Mission completed with obstacle avoidance!")
+            print("Mission completed with lateral obstacle avoidance!")
