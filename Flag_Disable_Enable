@@ -1,23 +1,19 @@
 import logging
-import sys
 import time
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
 from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
 from cflib.positioning.position_hl_commander import PositionHlCommander
-from cflib.utils import uri_helper
 from cflib.utils.multiranger import Multiranger
 
-URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E700')
-if len(sys.argv) > 1:
-    URI = sys.argv[1]
+# Set the Crazyflie URI
+URI1 = 'radio://0/80/2M/E7E7E7E705'
 
 logging.basicConfig(level=logging.ERROR)
 
 def is_close(range_val):
     MIN_DISTANCE = 0.3  # meters
     return range_val is not None and range_val < MIN_DISTANCE
-
 
 takeoff_sequence = [
     (0.0, 0.0, 0.2, 2.0),  # initial lift
@@ -42,24 +38,23 @@ if __name__ == "__main__":
     cflib.crtp.init_drivers()
     cf = Crazyflie(rw_cache='./cache')
 
-    with SyncCrazyflie(URI, cf=cf) as scf:
+    with SyncCrazyflie(URI1, cf=cf) as scf:
         scf.cf.platform.send_arming_request(True)
         time.sleep(1.0)
 
         with PositionHlCommander(scf) as position_commander, Multiranger(scf) as multiranger:
 
-        
+            # Takeoff 
             for x, y, z, t in takeoff_sequence:
                 position_commander.go_to(x, y, z)
                 time.sleep(t)
 
-          
+            # Route with obstacle avoidance 
             for x, y, z, t in route_sequence:
                 current_x, current_y, current_z = x, y, z
 
-                # Obstacle avoidance adjustments
                 dx, dy = 0.0, 0.0
-                if is_close(multiranger.front): #adjust distance by changing dx/dy
+                if is_close(multiranger.front):
                     dx -= 0.3
                 if is_close(multiranger.back):
                     dx += 0.3
@@ -68,11 +63,10 @@ if __name__ == "__main__":
                 if is_close(multiranger.right):
                     dy += 0.3
 
-                # Move while avoiding obstacles
                 position_commander.go_to(current_x + dx, current_y + dy, current_z)
                 time.sleep(t)
 
-            # -------- Landing --------
+            # Landing 
             for x, y, z, t in landing_sequence:
                 position_commander.go_to(x, y, z)
                 time.sleep(t)
