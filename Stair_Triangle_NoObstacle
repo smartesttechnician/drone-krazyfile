@@ -1,77 +1,74 @@
+import logging
 import time
 import cflib.crtp
-from cflib.crazyflie.swarm import CachedCfFactory, Swarm
+from cflib.crazyflie import Crazyflie
+from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
+from cflib.positioning.position_hl_commander import PositionHlCommander
+from cflib.utils.multiranger import Multiranger
 
-# ===== URIs =====
-URI1 = 'radio://0/70/2M/E7E7E7E701'
-uris = {URI1}
+# Set the Crazyflie URI
+URI1 = 'radio://0/80/2M/E7E7E7E705'
 
-# ===== Stair Flight Sequence (no takeoff/land) =====
-sequence_stair = [
-    (0.0, 0.0, 0.4, 3.0),     # Hover after takeoff
+logging.basicConfig(level=logging.ERROR)
+
+def is_close(range_val):
+    MIN_DISTANCE = 0.3  # meters
+    return range_val is not None and range_val < MIN_DISTANCE
+
+takeoff_sequence = [
+    (0.0, 0.0, 0.2, 2.0),  # initial lift
+    (0.0, 0.0, 0.4, 3.0)   # hover for 3 seconds
+]
+
+route_sequence = [
+    (0.0, 0.0, 0.4, 3.0),
     (0.0, 0.7, 0.4, 3.0),
     (0.7, 0.7, 0.4, 3.0),
     (0.7, 0.0, 0.4, 3.0),
     (0.7, -0.7, 0.4, 3.0),
-    (0.0, -0.7, 0.4, 3.0),
-    (0.0, 0.0, 0.4, 3.0)       # Return to center but stay at altitude
+    (0.0, -0.7, 0.4, 3.0)
 ]
 
-seq_args = {URI1: [sequence_stair]}
+landing_sequence = [
+    (0.0, 0.0, 0.4, 2.0),  # hover before descent
+    (0.0, 0.0, 0.0, 3.0)   # descend and land
+]
 
-# ===== Helper Functions =====
-def wait_for_param_download(scf):
-    while not scf.cf.param.is_updated:
-        time.sleep(1.0)
-    print('Parameters downloaded for', scf.cf.link_uri)
-
-def arm(scf):
-    scf.cf.platform.send_arming_request(True)
-    time.sleep(1.0)
-
-def take_off(cf, height=0.4, duration=2.0):
-    print("Taking off...")
-    vz = height / duration
-    for _ in range(int(duration / 0.1)):
-        cf.commander.send_velocity_world_setpoint(0, 0, vz, 0)
-        time.sleep(0.1)
-    cf.commander.send_hover_setpoint(0, 0, 0, height)
-    print("Reached hover height.")
-
-def land(cf, duration=2.0):
-    print("Landing...")
-    vz = -0.4 / duration
-    for _ in range(int(duration / 0.1)):
-        cf.commander.send_velocity_world_setpoint(0, 0, vz, 0)
-        time.sleep(0.1)
-    cf.commander.send_stop_setpoint()
-    cf.commander.send_notify_setpoint_stop()
-    print("Landed.")
-
-def run_sequence(scf, sequence):
-    cf = scf.cf
-    print("Executing stair flight pattern...")
-    for (x, y, z, duration) in sequence:
-        print(f"→ Moving to x={x:.2f}, y={y:.2f}, z={z:.2f} for {duration:.1f}s")
-        end_time = time.time() + duration
-        while time.time() < end_time:
-            cf.commander.send_position_setpoint(x, y, z, 0)
-            time.sleep(0.1)
-    print("Finished stair sequence.")
-
-# ===== Main =====
-if __name__ == '__main__':
+if __name__ == "__main__":
     cflib.crtp.init_drivers()
-    factory = CachedCfFactory(rw_cache='./cache')
+    cf = Crazyflie(rw_cache='./cache')
 
-    with Swarm(uris, factory=factory) as swarm:
-        print('Downloading parameters...')
-        swarm.parallel(wait_for_param_download)
-        print('All parameters ready.')
+    with SyncCrazyflie(URI1, cf=cf) as scf:
+        scf.cf.platform.send_arming_request(True)
+        time.sleep(1.0)
 
-        # ===== Separate phases =====
-        swarm.parallel(lambda scf: arm(scf))
-        swarm.parallel(lambda scf: take_off(scf.cf, 0.4))
-        swarm.parallel(run_sequence, args_dict=seq_args)
-        swarm.parallel(lambda scf: land(scf.cf))
-        print("Mission complete.")
+        with PositionHlCommander(scf) as position_commander, Multiranger(scf) as multiranger:
+
+            # -------- Takeoff --------
+            for x, y, z, t in takeoff_sequence:
+                position_commander.go_to(x, y, z)
+                time.sleep(t)
+
+            # -------- Route with obstacle avoidance --------
+            for x, y, z, t in route_sequence:
+                current_x, current_y, current_z = x, y, z
+
+                dx, dy = 0.0, 0.0
+                if is_close(multiranger.front):
+                    dx -= 0.3
+                if is_close(multiranger.back):
+                    dx += 0.3
+                if is_close(multiranger.left):
+                    dy -= 0.3
+                if is_close(multiranger.right):
+                    dy += 0.3
+
+                position_commander.go_to(current_x + dx, current_y + dy, current_z)
+                time.sleep(t)
+
+            # -------- Landing --------
+            for x, y, z, t in landing_sequence:
+                position_commander.go_to(x, y, z)
+                time.sleep(t)
+
+            print("Mission completed successfully!")
