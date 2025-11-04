@@ -8,97 +8,73 @@ from cflib.positioning.position_hl_commander import PositionHlCommander
 from cflib.utils import uri_helper
 from cflib.utils.multiranger import Multiranger
 
-# Set default URI (radio link)
 URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E700')
 if len(sys.argv) > 1:
     URI = sys.argv[1]
 
-# Logging only errors
 logging.basicConfig(level=logging.ERROR)
 
-# Minimum distance to obstacle
-MIN_DISTANCE = 0.2  # meters
-AVOIDANCE_STEP = 0.1  # meters to move to avoid obstacle
+def is_close(range_val):
+    MIN_DISTANCE = 0.3  # meters
+    return range_val is not None and range_val < MIN_DISTANCE
 
-# ===== Sequences =====
-takeoff_seq = [(0.0, 0.0, 0.4)]  # Takeoff to z=0.4m
-stair_seq = [
-    (0.0, 0.0, 0.4),
-    (0.0, 0.7, 0.4),
-    (0.7, 0.7, 0.4),
-    (0.7, 0.0, 0.4),
-    (0.7, -0.7, 0.4),
-    (0.0, -0.7, 0.4),
-    (0.0, 0.0, 0.4),
+
+takeoff_sequence = [
+    (0.0, 0.0, 0.2, 2.0),  # initial lift
+    (0.0, 0.0, 0.4, 3.0)   # hover for 3 seconds
 ]
-landing_seq = [(0.0, 0.0, 0.0)]  # Descend to z=0.0
 
-def is_close(range):
-    return range is not None and range < MIN_DISTANCE
+route_sequence = [
+    (0.0, 0.0, 0.4, 3.0),
+    (0.0, 0.7, 0.4, 3.0),
+    (0.7, 0.7, 0.4, 3.0),
+    (0.7, 0.0, 0.4, 3.0),
+    (0.7, -0.7, 0.4, 3.0),
+    (0.0, -0.7, 0.4, 3.0)
+]
 
-def move_with_avoidance(position_commander, multiranger, target_x, target_y, target_z):
-    x, y, z = target_x, target_y, target_z
-    max_attempts = 10
-    attempt = 0
+landing_sequence = [
+    (0.0, 0.0, 0.4, 2.0),  # hover before descent
+    (0.0, 0.0, 0.0, 3.0)   # descend and land
+]
 
-    while attempt < max_attempts:
-        dx, dy = 0.0, 0.0
-        if is_close(multiranger.front):
-            dx -= AVOIDANCE_STEP
-        if is_close(multiranger.back):
-            dx += AVOIDANCE_STEP
-        if is_close(multiranger.left):
-            dy -= AVOIDANCE_STEP
-        if is_close(multiranger.right):
-            dy += AVOIDANCE_STEP
-
-        if dx == 0 and dy == 0:
-            # Safe to move
-            position_commander.go_to(x, y, z)
-            time.sleep(0.2)
-            return True
-        else:
-            # Adjust slightly to avoid obstacle
-            x += dx
-            y += dy
-            position_commander.go_to(x, y, z)
-            time.sleep(0.2)
-            attempt += 1
-
-    print("Obstacle could not be avoided. Hovering in place.")
-    return False
-
-def fly_sequence(scf, sequence):
-    with PositionHlCommander(scf) as position_commander:
-        with Multiranger(scf) as multiranger:
-            for point in sequence:
-                target_x, target_y, target_z = point
-                success = move_with_avoidance(position_commander, multiranger, target_x, target_y, target_z)
-                if not success:
-                    break
-            # Hover a bit at the last point
-            position_commander.go_to(*sequence[-1])
-            time.sleep(1.0)
-
-if __name__ == '__main__':
-    # Initialize drivers
+if __name__ == "__main__":
     cflib.crtp.init_drivers()
     cf = Crazyflie(rw_cache='./cache')
 
     with SyncCrazyflie(URI, cf=cf) as scf:
-        # Arm Crazyflie
         scf.cf.platform.send_arming_request(True)
         time.sleep(1.0)
 
-        print("Takeoff sequence")
-        fly_sequence(scf, takeoff_seq)
+        with PositionHlCommander(scf) as position_commander, Multiranger(scf) as multiranger:
 
-        print("Stair pattern sequence with obstacle avoidance")
-        fly_sequence(scf, stair_seq)
+        
+            for x, y, z, t in takeoff_sequence:
+                position_commander.go_to(x, y, z)
+                time.sleep(t)
 
-        print("Landing sequence")
-        fly_sequence(scf, landing_seq)
+          
+            for x, y, z, t in route_sequence:
+                current_x, current_y, current_z = x, y, z
 
-        # Disarm
-        scf.cf.platform.send_arming_request(False)
-        print("Mission completed!")
+                # Obstacle avoidance adjustments
+                dx, dy = 0.0, 0.0
+                if is_close(multiranger.front): #adjust distance by changing dx/dy
+                    dx -= 0.3
+                if is_close(multiranger.back):
+                    dx += 0.3
+                if is_close(multiranger.left):
+                    dy -= 0.3
+                if is_close(multiranger.right):
+                    dy += 0.3
+
+                # Move while avoiding obstacles
+                position_commander.go_to(current_x + dx, current_y + dy, current_z)
+                time.sleep(t)
+
+            # -------- Landing --------
+            for x, y, z, t in landing_sequence:
+                position_commander.go_to(x, y, z)
+                time.sleep(t)
+
+            print("Mission completed successfully!")
