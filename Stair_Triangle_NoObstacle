@@ -1,267 +1,77 @@
-import rospy
-from rospy import Duration
-from pycrazyswarm import Crazyswarm
-from crazyswarm.srv import Takeoff, Land, GoTo
-from geometry_msgs.msg import Point
-from crazyswarm.msg import GenericLogData
-import random
+import time
+import cflib.crtp
+from cflib.crazyflie.swarm import CachedCfFactory, Swarm
 
-# ===== Waypoints =====
+# ===== URIs =====
+URI1 = 'radio://0/70/2M/E7E7E7E701'
+uris = {URI1}
+
+# ===== Stair Flight Sequence (no takeoff/land) =====
 sequence_stair = [
-     [0.0, 0.0, 0.4, 3.0, 0],     # 1: Takeoff / hover
-    [0.0, 0.7, 0.4, 3.0, 0],     # 2: Move right 0.7 m
-    [0.7, 0.7, 0.4, 3.0, 0],     # 3: Move forward 0.7 m
-    [0.7, 0.0, 0.4, 3.0, 0],     # 4: Move left 0.7 m
-    [0.7, -0.7, 0.4, 3.0, 0],    # 5: Move right/backward
-    [0.0, -0.7, 0.4, 3.0, 0],    # 6: Move back to x=0.0
-    [0.0, 0.0, 0.0, 3.0, 0]      # 7: Return to start and descend
-
+    (0.0, 0.0, 0.4, 3.0),     # Hover after takeoff
+    (0.0, 0.7, 0.4, 3.0),
+    (0.7, 0.7, 0.4, 3.0),
+    (0.7, 0.0, 0.4, 3.0),
+    (0.7, -0.7, 0.4, 3.0),
+    (0.0, -0.7, 0.4, 3.0),
+    (0.0, 0.0, 0.4, 3.0)       # Return to center but stay at altitude
 ]
 
-# ===== Flight Settings =====
-TAKEOFF_DURATION = 2.5
-HOVER_DURATION = 5.0
-LAND_DURATION = 2.5
-GOTO_DURATION = 3.0
-MIN_DISTANCE_X = 1.0
-MIN_DISTANCE = 0.5
-MIN_DISTANCE_Y = 0.3
-AVDDIS = 1.0
-VELOCITY = 0.2
-deviation = 0.4
-Scan_duration = 1.0
-SCANMODE = 0
+seq_args = {URI1: [sequence_stair]}
 
-# ===== Obstacle Avoidance Class =====
-class MultiRangerAvoidance:
-    def __init__(self, cf):
-        self.cf = cf
-        self.range_data = {}
+# ===== Helper Functions =====
+def wait_for_param_download(scf):
+    while not scf.cf.param.is_updated:
+        time.sleep(1.0)
+    print('Parameters downloaded for', scf.cf.link_uri)
 
-    def start(self):
-        rospy.Subscriber(f"/cf5/log1", GenericLogData, self.log_callback)
-        rospy.loginfo(f"Subscribed to /cf5/log1 for obstacle avoidance")
+def arm(scf):
+    scf.cf.platform.send_arming_request(True)
+    time.sleep(1.0)
 
-    def log_callback(self, data):
-        ranges = self.parse_log_data(data)
-        if ranges:
-            self.range_data = ranges
+def take_off(cf, height=0.4, duration=2.0):
+    print("Taking off...")
+    vz = height / duration
+    for _ in range(int(duration / 0.1)):
+        cf.commander.send_velocity_world_setpoint(0, 0, vz, 0)
+        time.sleep(0.1)
+    cf.commander.send_hover_setpoint(0, 0, 0, height)
+    print("Reached hover height.")
 
-    def parse_log_data(self, log_data):
-        ranges = {}
-        if len(log_data.values) >= 6:
-            ranges['front'] = log_data.values[2] / 1000
-            ranges['back'] = log_data.values[3] / 1000
-            ranges['left'] = log_data.values[4] / 1000
-            ranges['right'] = log_data.values[5] / 1000
-        return ranges if ranges else None
+def land(cf, duration=2.0):
+    print("Landing...")
+    vz = -0.4 / duration
+    for _ in range(int(duration / 0.1)):
+        cf.commander.send_velocity_world_setpoint(0, 0, vz, 0)
+        time.sleep(0.1)
+    cf.commander.send_stop_setpoint()
+    cf.commander.send_notify_setpoint_stop()
+    print("Landed.")
 
-    def get_avoidance_distance(self):
-        dx, dy = 0.0, 0.0
-        DISTANCE = 1  # Move distance in meters
-
-        timeHelper.sleep(GOTO_DURATION)
-
-        if SCANMODE == 0:
-            if 'front' in self.range_data and self.range_data["front"] < MIN_DISTANCE_X:
-                dx = DISTANCE
-                dy = DISTANCE
-
-        if SCANMODE == 1:
-            if 'left' in self.range_data and self.range_data["left"] < MIN_DISTANCE:
-                dy = DISTANCE
-            if 'right' in self.range_data and self.range_data["right"] < MIN_DISTANCE:
-                dy = DISTANCE
-
-        if SCANMODE == 2:
-            if 'front' in self.range_data and self.range_data["front"] < MIN_DISTANCE_X:
-                dx = DISTANCE
-            if 'back' in self.range_data and self.range_data["back"] < MIN_DISTANCE:
-                dx = DISTANCE
-
-        return dx, dy
-
-# ===== Flight Functions =====
-def rescanassist(tempx, tempy, tempalt, rescnx, rescny, goto_service, avoidance):
-    navflightplan = Point(x=tempx, y=tempy, z=tempalt)
-    goto_service(goal=navflightplan, yaw=0, duration=Duration(GOTO_DURATION))
-    timeHelper.sleep(GOTO_DURATION)
-    return avoidance.get_avoidance_distance()
-
-def climbassist(tempx, tempy, tempalt, destx, desty, stdz, mode, goto_service):
-    if mode == 0:
-        goto_service(goal=Point(x=tempx, y=tempy, z=tempalt), yaw=0, duration=Duration(GOTO_DURATION))
-        goto_service(goal=Point(x=destx, y=tempy, z=tempalt), yaw=0, duration=Duration(GOTO_DURATION))
-        goto_service(goal=Point(x=destx, y=tempy, z=stdz), yaw=0, duration=Duration(GOTO_DURATION))
-    elif mode == 1:
-        goto_service(goal=Point(x=tempx, y=tempy, z=tempalt), yaw=0, duration=Duration(GOTO_DURATION))
-        goto_service(goal=Point(x=tempx, y=desty, z=tempalt), yaw=0, duration=Duration(GOTO_DURATION))
-        goto_service(goal=Point(x=tempx, y=desty, z=stdz), yaw=0, duration=Duration(GOTO_DURATION))
-
-def rescannavdir(curposx, curposy, curryaw, stdz, destx, desty, destyaw, goto_service, land_service, avoidance):
-    tempx, tempy, tempalt, tempyaw = curposx, curposy, stdz, destyaw
-    currentx, currenty, currentlyalt, currentyaw = curposx, curposy, stdz, curryaw
-    deviationx = 0
-    deviationy = 0
-    SCANMODE = 0
-    mode = 0
-
-    rescnx, rescny = avoidance.get_avoidance_distance()
-
-    # ===== X-axis avoidance =====
-    if rescnx != 0:
-        SCANMODE = 1
-        tempy -= deviation
-        deviationy = -deviation
-        rescnx, rescny = rescanassist(tempx, tempy, tempalt, rescnx, rescny, goto_service, avoidance)
-
-        if rescnx != 0:
-            tempy += deviation * 2
-            deviationy = deviation
-            rescnx, rescny = rescanassist(tempx, tempy, tempalt, rescnx, rescny, goto_service, avoidance)
-            if rescnx != 0:
-                tempy -= deviation
-                deviationy = 0
-                tempalt = 1.25
-                mode = 0
-                rescnx, rescny = rescanassist(tempx, tempy, tempalt, rescnx, rescny, goto_service, avoidance)
-                climbassist(tempx, tempy, tempalt, destx, desty, stdz, mode, goto_service)
-                currentx, currenty, currentlyalt = destx, tempy, stdz
-            else:
-                goto_service(Point(x=destx, y=tempy, z=tempalt), yaw=0, duration=Duration(GOTO_DURATION))
-                currentx, currenty, currentlyalt = destx, tempy, tempalt
-        else:
-            goto_service(Point(x=destx, y=tempy, z=tempalt), yaw=0, duration=Duration(GOTO_DURATION))
-            currentx, currenty, currentlyalt = destx, tempy, tempalt
-    else:
-        goto_service(Point(x=destx, y=tempy, z=stdz), yaw=0, duration=Duration(GOTO_DURATION))
-        currentx, currenty, currentlyalt = destx, tempy, stdz
-
-    # ===== Y-axis avoidance =====
-    SCANMODE = 0
-    rescnx, rescny = avoidance.get_avoidance_distance()
-    tempx, tempy, tempalt = currentx, currenty, currentlyalt
-
-    if rescny != 0:
-        SCANMODE = 2
-        tempx -= deviation
-        deviationx = -deviation
-        rescnx, rescny = rescanassist(tempx, tempy, tempalt, rescnx, rescny, goto_service, avoidance)
-        if rescny != 0:
-            tempx += deviation * 2
-            deviationx = deviation
-            rescnx, rescny = rescanassist(tempx, tempy, tempalt, rescnx, rescny, goto_service, avoidance)
-            if rescny != 0:
-                tempx -= deviation
-                deviationx = 0
-                tempalt = 1.25
-                mode = 1
-                rescnx, rescny = rescanassist(tempx, tempy, tempalt, rescnx, rescny, goto_service, avoidance)
-                climbassist(tempx, tempy, tempalt, destx, desty, stdz, mode, goto_service)
-                currentx, currenty, currentlyalt = destx, desty, stdz
-            else:
-                goto_service(Point(x=tempx, y=desty, z=tempalt), yaw=0, duration=Duration(GOTO_DURATION))
-                goto_service(Point(x=destx, y=desty, z=stdz), yaw=0, duration=Duration(GOTO_DURATION))
-                currentx, currenty, currentlyalt = destx, desty, tempalt
-        else:
-            goto_service(Point(x=tempx, y=desty, z=tempalt), yaw=0, duration=Duration(GOTO_DURATION))
-            goto_service(Point(x=destx, y=desty, z=stdz), yaw=0, duration=Duration(GOTO_DURATION))
-            currentx, currenty, currentlyalt = destx, desty, tempalt
-    else:
-        goto_service(Point(x=destx, y=desty, z=stdz), yaw=0, duration=Duration(GOTO_DURATION))
-        currentx, currenty, currentlyalt = destx, desty, tempalt
-
-    return currentx, currenty, tempyaw, deviationx, deviationy
-
-# ===== Modified routenavplus: Obstacle avoidance disabled =====
-def routenavplus(goto_service, land_service, avoidance):
-    flightready = True
-    curline = 0
-    curposx = 0
-    curposy = 0
-    curalt = 0
-    curryaw = 0
-    divx = 0
-    divy = 0
-    forcerun = 1
-
-    while curline != len(sequence_stair):
-        destx, desty, stdz, travelduration, destyaw = sequence_stair[curline]
-        goal_point = Point(x=destx, y=desty, z=stdz)
-        curposstore = Point(x=curposx, y=curposy, z=stdz)
-
-        start_time = timeHelper.time()
-        max_flight_time = travelduration
-
-        if flightready:
-            goto_service(goal=curposstore, yaw=destyaw, duration=Duration(Scan_duration))
-            SCANMODE = 0
-
-            # Force obstacle avoidance off
-            dx, dy = 0.0, 0.0  # Disabled
-
-            if dx == 0.0 and dy == 0.0 or forcerun == 1:
-                try:
-                    goto_service(goal=goal_point, yaw=destyaw, duration=Duration(travelduration))
-                    curposx, curposy, curalt = destx, desty, stdz
-                    timeHelper.sleep(GOTO_DURATION)
-                except rospy.ServiceException as e:
-                    print(f"GoTo service call failed: {e}")
-                    flightready = False
-                    try:
-                        land_service(height=0.04, duration=Duration(LAND_DURATION))
-                    except rospy.ServiceException as e:
-                        print(f"Land service call failed: {e}")
-                    timeHelper.sleep(LAND_DURATION)
-            else:
-                # Obstacle avoidance routing commented out
-                # goto_service(goal=curposstore, yaw=0, duration=Duration(Scan_duration))
-                # curposx, curposy, curryaw, divx, divy = rescannavdir(curposx, curposy, curryaw, stdz, destx, desty, destyaw, goto_service, land_service, avoidance)
-                # timeHelper.sleep(GOTO_DURATION)
-                # curposstore = Point(x=curposx, y=curposy, z=stdz)
-                # goto_service(goal=curposstore, yaw=destyaw, duration=Duration(GOTO_DURATION))
-                # timeHelper.sleep(GOTO_DURATION)
-
-                goto_service(goal=goal_point, yaw=destyaw, duration=Duration(travelduration))
-                curposx, curposy, curalt = destx, desty, stdz
-                timeHelper.sleep(GOTO_DURATION)
-
-        curline += 1
+def run_sequence(scf, sequence):
+    cf = scf.cf
+    print("Executing stair flight pattern...")
+    for (x, y, z, duration) in sequence:
+        print(f"→ Moving to x={x:.2f}, y={y:.2f}, z={z:.2f} for {duration:.1f}s")
+        end_time = time.time() + duration
+        while time.time() < end_time:
+            cf.commander.send_position_setpoint(x, y, z, 0)
+            time.sleep(0.1)
+    print("Finished stair sequence.")
 
 # ===== Main =====
-def main():
-    swarm = Crazyswarm()
-    global timeHelper
-    timeHelper = swarm.timeHelper
-    cf = swarm.allcfs.crazyflies[0]
+if __name__ == '__main__':
+    cflib.crtp.init_drivers()
+    factory = CachedCfFactory(rw_cache='./cache')
 
-    rospy.wait_for_service('/cf5/takeoff')
-    rospy.wait_for_service('/cf5/land')
-    rospy.wait_for_service('/cf5/go_to')
+    with Swarm(uris, factory=factory) as swarm:
+        print('Downloading parameters...')
+        swarm.parallel(wait_for_param_download)
+        print('All parameters ready.')
 
-    takeoff_service = rospy.ServiceProxy('/cf5/takeoff', Takeoff)
-    land_service = rospy.ServiceProxy('/cf5/land', Land)
-    goto_service = rospy.ServiceProxy('/cf5/go_to', GoTo)
-
-    avoidance = MultiRangerAvoidance(cf)
-    avoidance.start()
-
-    try:
-        takeoff_service(height=0.5, duration=Duration(TAKEOFF_DURATION))
-    except rospy.ServiceException as e:
-        print(f"Takeoff failed: {e}")
-        return
-
-    timeHelper.sleep(TAKEOFF_DURATION + HOVER_DURATION)
-
-    routenavplus(goto_service, land_service, avoidance)
-
-    try:
-        land_service(height=0.04, duration=Duration(LAND_DURATION))
-    except rospy.ServiceException as e:
-        print(f"Landing failed: {e}")
-
-    timeHelper.sleep(LAND_DURATION)
-
-if __name__ == "__main__":
-    main() 
+        # ===== Separate phases =====
+        swarm.parallel(lambda scf: arm(scf))
+        swarm.parallel(lambda scf: take_off(scf.cf, 0.4))
+        swarm.parallel(run_sequence, args_dict=seq_args)
+        swarm.parallel(lambda scf: land(scf.cf))
+        print("Mission complete.")
