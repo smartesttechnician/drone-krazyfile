@@ -9,13 +9,13 @@ import random
 # ===== Waypoints =====
 sequence_stair = [
     [0.0, 0.0, 0.4, 3.0, 0],     # 1: Takeoff / hover
-    [0.0, 0.7, 0.4, 3.0, 0],     # 2: Move right 0.7 m (y +0.7)
-    [0.7, 0.7, 0.4, 3.0, 0],     # 3: Move forward 0.7 m (x +0.7)
-    [0.7, 0.0, 0.4, 3.0, 0],     # 4: Move left 0.7 m (y -0.7)
-    [0.7, 0.0, 0.1, 3.0, 0],     # 5: Descend to 0.1 m (safe low altitude)
-    [0.7, 0.7, 0.1, 3.0, 0],     # 6: Move right 0.7 m
-    [0.0, 0.7, 0.1, 3.0, 0],     # 7: Move back to x=0.0
-    [0.0, 0.0, 0.0, 3.0, 0]      # 8: Return to start
+    [0.0, 0.7, 0.4, 3.0, 0],     # 2: Move right 0.7 m
+    [0.7, 0.7, 0.4, 3.0, 0],     # 3: Move forward 0.7 m
+    [0.7, 0.0, 0.4, 3.0, 0],     # 4: Move left 0.7 m
+    [0.7, -0.7, 0.4, 3.0, 0],    # 5: Move right/backward
+    [0.0, -0.7, 0.4, 3.0, 0],    # 6: Move back to x=0.0
+    [0.0, 0.0, 0.0, 3.0, 0]      # 7: Return to start and descend
+
 ]
 
 # ===== Flight Settings =====
