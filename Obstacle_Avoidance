@@ -1,5 +1,4 @@
 import logging
-import sys
 import time
 import cflib.crtp
 from cflib.crazyflie import Crazyflie
@@ -8,102 +7,111 @@ from cflib.positioning.position_hl_commander import PositionHlCommander
 from cflib.utils import uri_helper
 from cflib.utils.multiranger import Multiranger
 
-# Crazyflie URI
-URI = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E705')
-if len(sys.argv) > 1:
-    URI = sys.argv[1]
+uri = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E705')
 
-# Only output errors from the logging framework
 logging.basicConfig(level=logging.ERROR)
 
-# Obstacle detection threshold
-def is_close(range_val, threshold=0.3):
-    if range_val is None:
-        return False
-    return range_val < threshold
+MIN_DISTANCE = 0.35      # detection threshold 
+SIDESTEP_DIST = 0.3      # sidestep distance 
+FORWARD_BYPASS = 0.4     # forward distance during avoidance , meaning it will move forward by 0.4m after the sidestep
 
-# Takeoff sequence
-takeoff_sequence = [
-    (0.0, 0.0, 0.2, 2.0),
-    (0.0, 0.0, 0.4, 3.0)
-]
+def detection(distance):
+    """Return True if obstacle is closer than MIN_DISTANCE."""
+    return distance is not None and distance < MIN_DISTANCE
 
-# Waypoints
-route_sequence = [
-    (0.0, 0.0, 0.4, 3.0),
-    (0.0, 0.7, 0.4, 3.0),
-    (0.7, 0.7, 0.4, 3.0),
-    (0.7, 0.0, 0.4, 3.0),
-    (0.7, -0.7, 0.4, 3.0),
-    (0.0, -0.7, 0.4, 3.0)
-]
-
-# Landing sequence
-landing_sequence = [
-    (0.0, -0.7, 0.4, 2.0),
-    (0.0, -0.7, 0.0, 3.0)
-]
-
-if __name__ == "__main__":
-    # Initialize drivers
-    cflib.crtp.init_drivers()
-    cf = Crazyflie(rw_cache='./cache')
-
-    with SyncCrazyflie(URI, cf=cf) as scf:
-        # Arm drone
+def sequence():
+    # Initialize and connect to Crazyflie
+    with SyncCrazyflie(uri, cf=Crazyflie(rw_cache='./cache')) as scf:
+        # Arm the Crazyflie
         scf.cf.platform.send_arming_request(True)
         time.sleep(1.0)
 
-        with PositionHlCommander(scf) as position_commander, Multiranger(scf) as multiranger:
+        # Enable Multiranger for obstacle sensing
+        with Multiranger(scf) as ranger:
+            with PositionHlCommander(
+                scf,
+                default_velocity=0.3,
+                default_height=0.3,
+                controller=PositionHlCommander.CONTROLLER_PID
+            ) as pc:
 
-            # ----- Takeoff -----
-            for x, y, z, t in takeoff_sequence:
-                position_commander.go_to(x, y, z)
-                time.sleep(t)
+                print("Starting mission...")
+                time.sleep(1.0)
 
-            # ----- Main route with lateral obstacle avoidance -----
-            x, y, z = 0.0, 0.0, 0.4
-            for target_x, target_y, target_z, hold_time in route_sequence:
-                while abs(x - target_x) > 0.01 or abs(y - target_y) > 0.01:
-                    dx, dy = target_x - x, target_y - y
+                # Waypoints to follow (in meters)
+                waypoints = [
+                    (0.8, 0.0),
+                    (0.8, -0.8),
+                    (-0.8, -0.8),
+                    (-0.8, 0.8),
+                    (0.8, 0.8),
+                    (0.8, 0.0),
+                    (0.0, 0.0)
+                ]
 
-                    # Step increment
-                    step_size = 0.05
-                    move_x = step_size if dx > 0 else -step_size
-                    move_y = step_size if dy > 0 else -step_size
+                for (x, y) in waypoints:
+                    print(f"Navigating to waypoint ({x}, {y})")
 
-                    # ----- Lateral obstacle avoidance -----
-                    if is_close(multiranger.front) and dx > 0:
-                        move_x = 0
-                        if not is_close(multiranger.left):
-                            move_y = step_size
-                        elif not is_close(multiranger.right):
-                            move_y = -step_size
-                    if is_close(multiranger.back) and dx < 0:
-                        move_x = 0
-                        if not is_close(multiranger.left):
-                            move_y = step_size
-                        elif not is_close(multiranger.right):
-                            move_y = -step_size
-                    if is_close(multiranger.left) and dy > 0:
-                        move_y = 0
-                    if is_close(multiranger.right) and dy < 0:
-                        move_y = 0
+                    while True:
+                        # Read distance sensors
+                        front = ranger.front
+                        back = ranger.back
+                        left = ranger.left
+                        right = ranger.right
 
-                    # Update position
-                    x += move_x + dx * 0.1
-                    y += move_y + dy * 0.1
-                    z = target_z
+                        # Obstacle avoidance logic
+                        if detection(front):
+                            print("Obstacle in Front! Avoiding...")
+                            pc.left(SIDESTEP_DIST)
+                            time.sleep(1.0)
+                            pc.forward(FORWARD_BYPASS)
+                            time.sleep(1.0)
+                            pc.right(SIDESTEP_DIST)
+                            time.sleep(1.0)
 
-                    position_commander.go_to(x, y, z)
-                    time.sleep(0.1)
+                        elif detection(back):
+                            print("Obstacle Behind! Avoiding...")
+                            pc.left(SIDESTEP_DIST)
+                            time.sleep(1.0)
+                            pc.back(FORWARD_BYPASS)
+                            time.sleep(1.0)
+                            pc.right(SIDESTEP_DIST)
+                            time.sleep(1.0)
 
-                # Hover at waypoint
-                time.sleep(hold_time)
+                        elif detection(left):
+                            print("Obstacle to the Left! Avoiding...")
+                            pc.right(SIDESTEP_DIST)
+                            time.sleep(1.0)
+                            pc.forward(FORWARD_BYPASS)
+                            time.sleep(1.0)
+                            pc.left(SIDESTEP_DIST)
+                            time.sleep(1.0)
 
-            # ----- Landing -----
-            for x, y, z, t in landing_sequence:
-                position_commander.go_to(x, y, z)
-                time.sleep(t)
+                        elif detection(right):
+                            print("Obstacle to the Right! Avoiding...")
+                            pc.left(SIDESTEP_DIST)
+                            time.sleep(1.0)
+                            pc.forward(FORWARD_BYPASS)
+                            time.sleep(1.0)
+                            pc.right(SIDESTEP_DIST)
+                            time.sleep(1.0)
 
-            print("Mission completed with lateral obstacle avoidance!")
+                        else:
+                            # No obstacle detected - proceed to waypoint
+                            print("Path clear, moving to waypoint.")
+                            pc.go_to(x, y, 0.3)
+                            break
+
+                        # Give sensors time to update
+                        time.sleep(0.1)
+
+                    # Short pause after each waypoint
+                    time.sleep(2.0)
+
+                print("Mission complete. Landing...")
+                pc.land()
+                time.sleep(1.0)
+
+if __name__ == "__main__":
+    cflib.crtp.init_drivers(enable_debug_driver=False)
+    sequence()
