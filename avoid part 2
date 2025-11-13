@@ -1,0 +1,135 @@
+import logging
+import time
+import cflib.crtp
+from cflib.crazyflie import Crazyflie
+from cflib.crazyflie.syncCrazyflie import SyncCrazyflie
+from cflib.positioning.position_hl_commander import PositionHlCommander
+from cflib.utils import uri_helper
+from cflib.utils.multiranger import Multiranger
+
+uri = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E705')
+
+MIN_DISTANCE = 0.35
+SIDESTEP_DIST = 0.3
+FORWARD_BYPASS = 0.4
+STEP = 0.1      # small movement step for continuous monitoring
+
+def detection(distance):
+    return distance is not None and distance < MIN_DISTANCE
+
+def avoid(pc, ranger):
+    """Perform avoidance if any sensor detects an obstacle."""
+    front = ranger.front
+    back = ranger.back
+    left = ranger.left
+    right = ranger.right
+
+    if detection(front):
+        print("Obstacle FRONT → avoiding")
+        pc.left(SIDESTEP_DIST)
+        time.sleep(0.3)
+        pc.forward(FORWARD_BYPASS)
+        time.sleep(0.3)
+        pc.right(SIDESTEP_DIST)
+        time.sleep(0.3)
+        return True
+
+    if detection(back):
+        print("Obstacle BACK → avoiding")
+        pc.left(SIDESTEP_DIST)
+        time.sleep(0.3)
+        pc.back(FORWARD_BYPASS)
+        time.sleep(0.3)
+        pc.right(SIDESTEP_DIST)
+        time.sleep(0.3)
+        return True
+
+    if detection(left):
+        print("Obstacle LEFT → avoiding")
+        pc.right(SIDESTEP_DIST)
+        time.sleep(0.3)
+        pc.forward(FORWARD_BYPASS)
+        time.sleep(0.3)
+        pc.left(SIDESTEP_DIST)
+        time.sleep(0.3)
+        return True
+
+    if detection(right):
+        print("Obstacle RIGHT → avoiding")
+        pc.left(SIDESTEP_DIST)
+        time.sleep(0.3)
+        pc.forward(FORWARD_BYPASS)
+        time.sleep(0.3)
+        pc.right(SIDESTEP_DIST)
+        time.sleep(0.3)
+        return True
+
+    return False
+
+
+def sequence():
+    with SyncCrazyflie(uri, cf=Crazyflie(rw_cache='./cache')) as scf:
+        scf.cf.platform.send_arming_request(True)
+        time.sleep(1)
+
+        with Multiranger(scf) as ranger:
+            with PositionHlCommander(
+                scf,
+                default_velocity=0.3,
+                default_height=0.3,
+                controller=PositionHlCommander.CONTROLLER_PID
+            ) as pc:
+
+                print("Starting mission...")
+                time.sleep(1)
+
+          
+                waypoints = [
+                    (0.8, 0.0),
+                    (0.8, -0.8),
+                    (-0.8, -0.8),
+                    (-0.8, 0.8),
+                    (0.8, 0.8),
+                    (0.8, 0.0),
+                    (0.0, 0.0)
+                ]
+
+                for (target_x, target_y) in waypoints:
+                    print(f"Heading to waypoint {target_x}, {target_y}")
+
+                    while True:
+                        # Check for obstacles continuously
+                        if avoid(pc, ranger):
+                            continue
+
+                        # Get current estimate
+                        pos = pc.get_position()
+                        curr_x, curr_y, _ = pos
+
+                        # Compute distance remaining
+                        dx = target_x - curr_x
+                        dy = target_y - curr_y
+
+                        # If reached waypoint, break
+                        if abs(dx) < 0.05 and abs(dy) < 0.05:
+                            print("Waypoint reached.")
+                            break
+
+                        # Normalize step movement
+                        step_x = max(min(dx, STEP), -STEP)
+                        step_y = max(min(dy, STEP), -STEP)
+
+                        # Move in tiny increments
+                        pc.go_to(curr_x + step_x, curr_y + step_y, 0.3)
+                        time.sleep(0.05)
+
+                    time.sleep(2)
+
+                print("Mission complete. Landing...")
+                pc.land()
+                time.sleep(1)
+
+
+if __name__ == "__main__":
+    cflib.crtp.init_drivers(enable_debug_driver=False)
+    sequence()
