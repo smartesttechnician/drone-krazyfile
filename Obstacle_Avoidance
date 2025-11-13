@@ -11,7 +11,7 @@ uri = uri_helper.uri_from_env(default='radio://0/80/2M/E7E7E7E705')
 
 MIN_DISTANCE = 0.35      # detection threshold 
 SIDESTEP_DIST = 0.4      # sidestep distance 
-FORWARD_BYPASS = 0.4     # forward distance during avoidance , aft sidestep move 0.4m
+FORWARD_BYPASS = 0.6     # forward distance during avoidance , aft sidestep move 0.4m
 
 def detection(distance):
     """Return True if obstacle is closer than MIN_DISTANCE."""
